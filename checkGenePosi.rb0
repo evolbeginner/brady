@@ -1,0 +1,150 @@
+#! /bin/env ruby
+
+
+##################################################
+$: << File.expand_path("~/LHW-tools/extract/lib")
+
+
+##################################################
+require 'getoptlong'
+require 'set'
+
+require 'util'
+require 'Dir'
+
+
+##################################################
+def readCoreGeneFile(infile)
+  h = Hash.new{|h,k|h[k]={}}
+  in_fh = File.open(infile, 'r')
+  in_fh.each_line do |line|
+    line.chomp!
+    line_arr = line.split("\t")
+    next if line_arr.size < 3
+    gene = line_arr[0]
+    evalue, identity = line_arr[1,2].map{|i|i.to_f}
+    h[gene][:evalue] = evalue
+    h[gene][:identity] = identity
+  end
+  in_fh.close
+  return(h)
+end
+
+
+def getCoor(locus)
+  locus =~ /\d+$/
+  coor = $&.to_i
+  return(coor)
+end
+
+
+def findCoreGene(blast_file:, geneInfo:, c:, orgn:)
+  subject2locus, locus2subject = Hash.new, Hash.new
+  core_subject2locus, core_locus2subject = Hash.new, Hash.new
+  in_fh = File.open(blast_file, 'r')
+  in_fh.each_line do |line|
+    line.chomp!
+    line_arr = line.split("\t")
+    subject = line_arr[1]
+    identity, evalue = line_arr.values_at(2,-2).map{|i|i.to_f}
+    if geneInfo.include?(c) and ! geneInfo[c].nil?
+      next if evalue > geneInfo[c][:evalue]
+      next if identity < geneInfo[c][:identity]
+      core_subject2locus[c] = subject
+      core_locus2subject[subject] = c
+    end
+    subject2locus[c] = subject
+    locus2subject[subject] = c
+    break #only the best one kept
+  end
+  in_fh.close
+  return([subject2locus, locus2subject, core_subject2locus, core_locus2subject])
+end
+
+
+##################################################
+indir = nil
+coreGeneFile = nil
+dist_cutoff = 20
+seq_indirs = Array.new
+seq_suffix = 'protein'
+seq_files = Array.new
+is_print_orgn = false
+
+geneInfo = Hash.new
+
+
+##################################################
+opts = GetoptLong.new(
+  ['--indir', GetoptLong::REQUIRED_ARGUMENT],
+  ['--core_gene', GetoptLong::REQUIRED_ARGUMENT],
+  ['-d', '--dist', GetoptLong::REQUIRED_ARGUMENT],
+  ['--seq_indir', GetoptLong::REQUIRED_ARGUMENT],
+  ['--print_orgn', GetoptLong::NO_ARGUMENT],
+)
+
+opts.each do |opt, value|
+  case opt
+    when '--indir'
+      indir = value
+    when '--core_gene'
+      coreGeneFile = value
+    when '-d', '--dist'
+      dist_cutoff = value.to_i
+    when '--seq_indir'
+      seq_indirs << value.split(',')
+      seq_indirs.flatten!
+    when '--print_orgn'
+      is_print_orgn = true
+  end
+end
+
+
+##################################################
+geneInfo = readCoreGeneFile(coreGeneFile)
+#geneInfo = gene2evalue.merge(gene2evalue){|k, v| v = v.to_f if not v.nil?}
+
+seq_indirs.each do |seq_indir|
+  seq_files << read_infiles(seq_indir, seq_suffix)
+end
+seq_files.flatten!
+
+
+##################################################
+Dir.foreach(indir) do |orgn|
+  next if orgn =~ /^\./
+  sub_indir = File.join(indir, orgn)
+  subject2locus, locus2subject, core_subject2locus, core_locus2subject = Hash.new, Hash.new, Hash.new, Hash.new
+  Dir.foreach(sub_indir) do |b|
+    next if b =~ /^\./
+    c = getCorename(b)
+    blast_file = File.join(sub_indir, b)
+    h1, h2, h3, h4 = findCoreGene(blast_file:blast_file, geneInfo:geneInfo, c:c, orgn:orgn)
+    subject2locus.merge!(h1)
+    locus2subject.merge!(h2)
+    core_subject2locus.merge!(h3)
+    core_locus2subject.merge!(h4)
+  end
+  core_set = core_subject2locus.values.to_set.divide{|i,j| (getCoor(i)-getCoor(j)).abs <= dist_cutoff}.to_a.map{|i|i.to_a}
+
+  # note there could be cases of >=2 sets of T3SS
+  if core_set[0].nil? or core_set[0].size < 2
+    next
+  end
+
+  core_set.each do |core_genes|
+    p [orgn, core_genes]
+    set = subject2locus.values.to_set.divide{|i,j| (getCoor(i)-getCoor(j)).abs <= dist_cutoff}.to_a.map{|i|i.to_a}
+    genes = set.sort_by{|i|i.to_a.size}.reverse
+    if (genes[0] & core_genes).size == core_genes.size
+      if is_print_orgn
+        puts orgn
+      else
+        p [orgn, genes[0]]
+        #p [orgn, set.to_a[0].to_a.size]
+      end
+    end
+  end
+end
+
+

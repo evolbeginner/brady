@@ -1,0 +1,1 @@
+/home-user/sswang/project/Rhizobiales/scripts/searchBlast/from_runBlastGta_to_res.rb

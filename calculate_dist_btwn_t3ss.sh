@@ -1,0 +1,3 @@
+for i in `grep Brady itol/itol.WSM1417.txt | awk -F, '{print $1}'`; do head -2 ../blast/T3SS/USDA61/$i/*J.blast8 | ruby -lnae '$F[1] =~ /_(\d+)$/; p $1.to_i' | awk '{a[NR]=$0}END{b=a[2]-a[1]; if(b<0){b=-b}; if(b>8000-b){b=8000-b}; print b}'; done | awk '{a+=$0}END{print a/NR}'
+
+for i in `grep Brady T3SS/itol/itol.USDA61.txt | awk -F, '{print $1}'`; do t3ss=`head -1 ./blast/nod/$i/nodA.blast8 | ruby -lnae '$F[1] =~ /_(\d+)$/; puts $1.to_i'`; nod=`head -1 ./blast/T3SS/USDA61/$i/*J.blast8 | ruby -lnae '$F[1] =~ /_(\d+)$/; puts $1.to_i'`; export t3ss; export nod; awk '{a=ENVIRON["t3ss"]; b=ENVIRON["nod"]; c=a-b; if(c<0){c=-c} if(c>9000-c){c=9000-c} print c}' <<< ''; done | awk '{a+=$_}END{print a/NR}'

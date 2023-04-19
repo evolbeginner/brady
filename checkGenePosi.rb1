@@ -1,0 +1,236 @@
+#! /bin/env ruby
+
+
+##################################################
+require 'getoptlong'
+require 'set'
+
+require 'util'
+require 'Dir'
+require 'SSW_bio'
+
+$: << File.expand_path("~/LHW-tools/extract/lib")
+require 'util_extractCOG'
+
+
+##################################################
+def readCoreGeneFile(infile)
+  h = Hash.new{|h,k|h[k]={}}
+  in_fh = File.open(infile, 'r')
+  in_fh.each_line do |line|
+    line.chomp!
+    line_arr = line.split("\t")
+    next if line_arr.size < 3
+    gene = line_arr[0]
+    evalue, identity = line_arr[1,2].map{|i|i.to_f}
+    h[gene][:evalue] = evalue
+    h[gene][:identity] = identity
+  end
+  in_fh.close
+  return(h)
+end
+
+
+def getCoor(locus)
+  locus =~ /\d+$/
+  coor = $&.to_i
+  return(coor)
+end
+
+
+def findCoreGene(blast_file:, geneInfo:, c:, orgn:)
+  subject2locus, locus2subject = Hash.new, Hash.new
+  core_subject2locus, core_locus2subject = Hash.new, Hash.new
+  in_fh = File.open(blast_file, 'r')
+  in_fh.each_line do |line|
+    line.chomp!
+    line_arr = line.split("\t")
+    subject = line_arr[1]
+    identity, evalue = line_arr.values_at(2,-2).map{|i|i.to_f}
+    if geneInfo.include?(c) and ! geneInfo[c].nil?
+      next if evalue > geneInfo[c][:evalue]
+      next if identity < geneInfo[c][:identity]
+      core_subject2locus[c] = subject
+      core_locus2subject[subject] = c
+    end
+    subject2locus[c] = subject
+    locus2subject[subject] = c
+    break #only the best one kept
+  end
+  in_fh.close
+  return([subject2locus, locus2subject, core_subject2locus, core_locus2subject])
+end
+
+
+def output(core_sets:, subject2locus:, locus2subject:, dist_cutoff:, orgn:, orgn2seqfile:, seq_outdirs:, key_gene_2_abbr:, num_core_cutoff:)
+  # note there could be cases of >=2 sets of T3SS
+  core_sets.each do |core_genes|
+    next if core_genes.nil? or core_genes.size < num_core_cutoff
+    puts orgn
+    set = subject2locus.values.to_set.divide{|i,j| (getCoor(i)-getCoor(j)).abs <= dist_cutoff}.to_a.map{|i|i.to_a}
+    genes = set.sort_by{|i|i.to_a.size}.reverse
+    if (genes[0] & core_genes).size == core_genes.size
+      if $is_print_orgn
+        puts orgn
+      elsif $is_print_gene
+        p [orgn, genes[0].map{|gene|locus2subject[gene]}]
+      elsif $is_print_seq
+        output_seq(orgn:orgn, locus2subject:locus2subject, orgn2seqfile:orgn2seqfile, seq_outdirs:seq_outdirs, key_gene_2_abbr:key_gene_2_abbr)
+      else
+        p [orgn, genes[0]]
+      end
+    end
+  end
+end
+
+
+def get_orgn_2_seq_file(seq_files)
+  h = Hash.new
+  seq_files.map{|seq_file| h[getCorename(seq_file)] = seq_file}
+  return(h)
+end
+
+
+def output_seq(orgn:, locus2subject:, orgn2seqfile:, seq_outdirs:, key_gene_2_abbr:)
+  seqfile = orgn2seqfile[orgn]
+  seq_objs = Hash.new
+  seq_objs_ori = read_seq_file(seqfile)
+  seq_objs_ori.each{|k,v| seq_objs[k.split(' ')[0]] = v } # there might be a space in seq title in the seq file like "brady|gene1 unknown"
+  locus2subject.each do |locus, subject|
+    if key_gene_2_abbr.include?(subject)
+      outfile = File.join(seq_outdirs['key'], key_gene_2_abbr[subject]+'.fas')
+      output_gene(outfile, seq_objs, orgn, locus)
+    end
+    outfile = File.join(seq_outdirs['all'], subject+'.fas')
+    output_gene(outfile, seq_objs, orgn, locus)
+  end
+end
+
+
+def output_gene(outfile, seq_objs, orgn, locus)
+  out_fh = File.open(outfile, 'a')
+  out_fh.puts '>' + orgn + "\n" + seq_objs[locus].seq
+  out_fh.close
+end
+
+
+##################################################
+indir = nil
+coreGeneFile = nil
+dist_cutoff = 20
+seq_indirs = Array.new
+seq_suffix = 'protein'
+seq_files = Array.new
+species_included = Array.new
+key_gene_2_abbr = Hash.new
+num_core_cutoff = 2
+
+seq_outdir = nil
+seq_outdirs = Hash.new
+is_force = false
+
+$is_print_orgn = false
+$is_print_gene = false
+$is_print_seq = false
+
+geneInfo = Hash.new
+orgn2seqfile = Hash.new
+
+
+##################################################
+argv = ARGV
+
+opts = GetoptLong.new(
+  ['--indir', GetoptLong::REQUIRED_ARGUMENT],
+  ['--core_gene', GetoptLong::REQUIRED_ARGUMENT],
+  ['-d', '--dist', GetoptLong::REQUIRED_ARGUMENT],
+  ['-n', '--num_core_gene', GetoptLong::REQUIRED_ARGUMENT],
+  ['--seq_indir', GetoptLong::REQUIRED_ARGUMENT],
+  ['--seq_outdir', GetoptLong::REQUIRED_ARGUMENT],
+  ['--force', GetoptLong::NO_ARGUMENT],
+  ['--include_list', '--species_include_list', GetoptLong::REQUIRED_ARGUMENT],
+  ['--key_gene_list', GetoptLong::REQUIRED_ARGUMENT],
+  ['--print_orgn', GetoptLong::NO_ARGUMENT],
+  ['--print_gene', GetoptLong::NO_ARGUMENT],
+  ['--print_seq', GetoptLong::NO_ARGUMENT],
+)
+
+opts.each do |opt, value|
+  case opt
+    when '--indir'
+      indir = value
+    when '--core_gene'
+      coreGeneFile = value
+    when '-d', '--dist'
+      dist_cutoff = value.to_i
+    when '-n', '--num_core_gene'
+      num_core_gene_cutoff = value.to_i
+    when '--seq_indir'
+      seq_indirs << value.split(',')
+      seq_indirs.flatten!
+    when '--seq_outdir'
+      seq_outdir = value
+    when '--force'
+      is_force = true
+    when '--include_list', '--species_include_list'
+      species_included = read_list(value).keys
+    when '--key_gene_list'
+      key_gene_2_abbr = readTbl(value)[0]
+    when '--print_orgn'
+      $is_print_orgn = true
+    when '--print_gene'
+      $is_print_gene = true
+    when '--print_seq'
+      $is_print_seq = true
+  end
+end
+
+
+##################################################
+geneInfo = readCoreGeneFile(coreGeneFile)
+#geneInfo = gene2evalue.merge(gene2evalue){|k, v| v = v.to_f if not v.nil?}
+
+unless seq_indirs.empty?
+  seq_indirs.each do |seq_indir|
+    seq_files << read_infiles(seq_indir, seq_suffix)
+    seq_files.flatten!
+  end
+  orgn2seqfile = get_orgn_2_seq_file(seq_files)
+  mkdir_with_force(seq_outdir, is_force) # create seq_outdir
+  `echo #{ARGV.join(' ')} > #{seq_outdir}/argv`
+  seq_outdirs['all'] = File.join(seq_outdir, 'all')
+  seq_outdirs['key'] = File.join(seq_outdir, 'key')
+  seq_outdirs.map{|k, v| mkdir_with_force(v, is_force) }
+end
+
+unless species_included.empty?
+  $out2in, $in2out = getSpeciesNameRelaWithoutFile(species_included)
+else
+  $out2in, $in2out = getSpeciesNameRelaWithoutFile(seq_files.map{|i|[getCorename(i), 1]}.to_h)
+end
+
+
+##################################################
+Dir.foreach(indir) do |orgn|
+  next if orgn =~ /^\./
+  sub_indir = File.join(indir, orgn)
+  subject2locus, locus2subject, core_subject2locus, core_locus2subject = Hash.new, Hash.new, Hash.new, Hash.new
+  Dir.foreach(sub_indir) do |b|
+    next if b =~ /^\./
+    c = getCorename(b)
+    blast_file = File.join(sub_indir, b)
+    h1, h2, h3, h4 = findCoreGene(blast_file:blast_file, geneInfo:geneInfo, c:c, orgn:orgn)
+    subject2locus.merge!(h1)
+    locus2subject.merge!(h2)
+    core_subject2locus.merge!(h3)
+    core_locus2subject.merge!(h4)
+  end
+
+  core_sets = core_subject2locus.values.to_set.divide{|i,j| (getCoor(i)-getCoor(j)).abs <= dist_cutoff}.to_a.map{|i|i.to_a}
+  core_sets = core_sets.sort_by{|i|i.size}.reverse
+
+  output(core_sets:core_sets, subject2locus:subject2locus, locus2subject:locus2subject, dist_cutoff:dist_cutoff, orgn:orgn, orgn2seqfile:orgn2seqfile, seq_outdirs:seq_outdirs, key_gene_2_abbr:key_gene_2_abbr, num_core_cutoff:num_core_cutoff)
+
+end
+
+

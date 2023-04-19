@@ -1,0 +1,1 @@
+/home-user/sswang/project/Rhizobiales/scripts/searchBlast/get_copy_num_from_blast.rb
